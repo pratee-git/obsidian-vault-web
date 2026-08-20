@@ -49,6 +49,69 @@ function sameOrigin(req) {
 
 const TOKEN_COOKIE = "vault_web_token";
 
+// When the origin sits behind Cloudflare Access, Access is the real gate and
+// the shared token is only a fallback for direct localhost use. Access proves
+// itself with a signed JWT, so verify the signature — never trust the header
+// alone, which anything reaching the origin could set.
+const ACCESS_TEAM_DOMAIN = process.env.ACCESS_TEAM_DOMAIN || "";
+const ACCESS_AUD = process.env.ACCESS_AUD || "";
+const CERTS_TTL_MS = 60 * 60 * 1000;
+let certsCache = { at: 0, keys: new Map() };
+
+async function accessKeys() {
+  if (Date.now() - certsCache.at < CERTS_TTL_MS && certsCache.keys.size) {
+    return certsCache.keys;
+  }
+  const response = await fetch(`https://${ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`);
+  if (!response.ok) throw new Error(`Access certs: HTTP ${response.status}`);
+  const { keys } = await response.json();
+  const parsed = new Map();
+  for (const jwk of keys || []) {
+    parsed.set(jwk.kid, crypto.createPublicKey({ key: jwk, format: "jwk" }));
+  }
+  certsCache = { at: Date.now(), keys: parsed };
+  return parsed;
+}
+
+function decodeSegment(segment) {
+  return JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
+}
+
+async function verifyAccessJwt(jwt, keys = null) {
+  if (!ACCESS_TEAM_DOMAIN || !ACCESS_AUD || !jwt) return false;
+  const parts = String(jwt).split(".");
+  if (parts.length !== 3) return false;
+
+  const [rawHeader, rawPayload, rawSignature] = parts;
+  let header;
+  let payload;
+  try {
+    header = decodeSegment(rawHeader);
+    payload = decodeSegment(rawPayload);
+  } catch {
+    return false;
+  }
+  if (header.alg !== "RS256") return false;
+
+  const key = (keys || (await accessKeys())).get(header.kid);
+  if (!key) return false;
+
+  const verified = crypto.verify(
+    "RSA-SHA256",
+    Buffer.from(`${rawHeader}.${rawPayload}`),
+    key,
+    Buffer.from(rawSignature, "base64url")
+  );
+  if (!verified) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp !== "number" || payload.exp <= now) return false;
+  if (typeof payload.nbf === "number" && payload.nbf > now + 60) return false;
+  if (payload.iss !== `https://${ACCESS_TEAM_DOMAIN}`) return false;
+  const audience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  return audience.includes(ACCESS_AUD);
+}
+
 function cookieToken(req) {
   const raw = req.headers.cookie;
   if (!raw) return "";
@@ -59,11 +122,16 @@ function cookieToken(req) {
   return "";
 }
 
-function authorized(req, url) {
+async function authorized(req, url) {
   const header = req.headers["x-vault-web-token"];
   const query = url.searchParams.get("token");
   const token = (Array.isArray(header) ? header[0] : header) || query || cookieToken(req);
-  return token === ACCESS_TOKEN;
+  if (token === ACCESS_TOKEN) return true;
+  try {
+    return await verifyAccessJwt(req.headers["cf-access-jwt-assertion"]);
+  } catch {
+    return false;
+  }
 }
 
 function parseBody(req) {
@@ -229,7 +297,7 @@ async function api(req, res, url) {
   if (!sameOrigin(req)) {
     return send(res, 403, { error: "Forbidden origin" });
   }
-  if (!authorized(req, url)) {
+  if (!(await authorized(req, url))) {
     return send(res, 401, { error: "Unauthorized" });
   }
 
@@ -387,7 +455,7 @@ async function staticFile(req, res, url) {
     // index.html carries the API token to the browser, so serving it to an
     // unauthenticated visitor hands out full read/write access to the vault.
     // The other assets are app code and stay open, or script tags would 401.
-    if (!authorized(req, url)) {
+    if (!(await authorized(req, url))) {
       return send(res, 401, "Unauthorized", "text/plain; charset=utf-8");
     }
     const [html, css, js] = await Promise.all([
@@ -447,4 +515,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { rewriteWikiLinks, vaultPath, server };
+module.exports = { rewriteWikiLinks, vaultPath, verifyAccessJwt, server };
