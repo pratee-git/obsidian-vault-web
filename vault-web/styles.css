@@ -238,6 +238,10 @@ body.sidebar-collapsed .sidebar-resize {
 .note-path {
   border: 0;
   background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
   padding: 2px 4px;
   margin-left: -4px;
   border-radius: 4px;
@@ -435,6 +439,11 @@ body.sidebar-collapsed .sidebar-resize {
   min-width: 0;
   min-height: 0;
   display: grid;
+  /* Without this the implicit column is auto-sized, so one unbreakable string
+     in the header (a long note path) widens the header, the editor, and the
+     links panel past the viewport — and body sets overflow:hidden, so the
+     overflowing part can never be scrolled to. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   transition: grid-template-rows 180ms ease;
 }
@@ -442,6 +451,7 @@ body.sidebar-collapsed .sidebar-resize {
 .editor-header {
   min-height: 72px;
   height: 72px;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -452,6 +462,9 @@ body.sidebar-collapsed .sidebar-resize {
 }
 
 .note-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
@@ -460,6 +473,7 @@ body.sidebar-collapsed .sidebar-resize {
   display: flex;
   align-items: center;
   gap: 9px;
+  min-width: 0;
 }
 
 .save-status {
@@ -523,6 +537,7 @@ body.sidebar-collapsed .sidebar-resize {
 .preview {
   line-height: 1.62;
   font-size: 16px;
+  overflow-wrap: anywhere;
 }
 
 .preview.hidden,
@@ -840,14 +855,6 @@ label select {
 
   .editor-header > div:first-child {
     min-width: 0;
-  }
-
-  .note-title,
-  .note-path {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    overflow-wrap: normal;
   }
 
   .links-panel {
