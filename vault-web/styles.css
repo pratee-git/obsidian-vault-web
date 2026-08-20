@@ -787,7 +787,7 @@ label select {
   gap: 8px;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 760px), (max-width: 1024px) and (orientation: portrait) {
   body,
   body.sidebar-collapsed,
   body.links-collapsed {
@@ -829,10 +829,25 @@ label select {
     padding-left: 34px;
   }
 
+  /* The header height is fixed at 72px, so stacking these pushed the button
+     row past the edge and cut it off. Keep one row and let the title shrink. */
   .editor-header {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 8px;
+    height: auto;
+    min-height: 56px;
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .editor-header > div:first-child {
+    min-width: 0;
+  }
+
+  .note-title,
+  .note-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow-wrap: normal;
   }
 
   .links-panel {
