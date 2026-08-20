@@ -7,6 +7,8 @@ const VAULT_ROOT = process.env.VAULT_ROOT || process.cwd();
 const PORT = Number(process.env.PORT || 4177);
 const HOST = process.env.HOST || "127.0.0.1";
 const APP_DIR = __dirname;
+// A note row is ~120 bytes, so even a huge vault stays a small response.
+const MAX_RESULTS = 5000;
 const ACCESS_TOKEN = process.env.VAULT_WEB_TOKEN || crypto.randomBytes(32).toString("hex");
 // Set BASE_ORIGIN to the public URL when serving through a tunnel, otherwise
 // the browser Origin never matches and every write is rejected.
@@ -223,7 +225,7 @@ async function api(req, res, url) {
     const files = await walk(VAULT_ROOT);
     if (!q) {
       files.sort((a, b) => b.modified - a.modified);
-      return send(res, 200, files.slice(0, 500));
+      return send(res, 200, files.slice(0, MAX_RESULTS));
     }
 
     // ponytail: reads every note on each search. Fine at a few thousand notes;
@@ -240,7 +242,7 @@ async function api(req, res, url) {
       matches.push({ ...file, snippet: snippetAround(content, at, q.length) });
     }
     matches.sort((a, b) => b.modified - a.modified);
-    return send(res, 200, matches.slice(0, 500));
+    return send(res, 200, matches.slice(0, MAX_RESULTS));
   }
 
   if (url.pathname === "/api/folders" && req.method === "GET") {
