@@ -22,7 +22,7 @@ const HIDDEN_DIRS = new Set([
   ".tmp.driveupload",
 ]);
 
-function send(res, status, body, type = "application/json; charset=utf-8") {
+function send(res, status, body, type = "application/json; charset=utf-8", extraHeaders) {
   const payload =
     typeof body === "string" || Buffer.isBuffer(body)
       ? body
@@ -37,6 +37,7 @@ function send(res, status, body, type = "application/json; charset=utf-8") {
     "Content-Security-Policy":
       "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
     "X-Content-Type-Options": "nosniff",
+    ...extraHeaders,
   });
   res.end(payload);
 }
@@ -46,10 +47,22 @@ function sameOrigin(req) {
   return !origin || origin === BASE_ORIGIN;
 }
 
+const TOKEN_COOKIE = "vault_web_token";
+
+function cookieToken(req) {
+  const raw = req.headers.cookie;
+  if (!raw) return "";
+  for (const part of raw.split(";")) {
+    const [name, ...value] = part.trim().split("=");
+    if (name === TOKEN_COOKIE) return decodeURIComponent(value.join("="));
+  }
+  return "";
+}
+
 function authorized(req, url) {
   const header = req.headers["x-vault-web-token"];
   const query = url.searchParams.get("token");
-  const token = Array.isArray(header) ? header[0] : header || query;
+  const token = (Array.isArray(header) ? header[0] : header) || query || cookieToken(req);
   return token === ACCESS_TOKEN;
 }
 
@@ -385,7 +398,9 @@ async function staticFile(req, res, url) {
     const inline = html
       .replace('<link rel="stylesheet" href="/styles.css" />', `<style>${css}</style>`)
       .replace('<script defer src="/main.js"></script>', `<script>window.__VAULT_WEB_TOKEN__=${JSON.stringify(ACCESS_TOKEN)};</script><script>${js}</script>`);
-    return send(res, 200, inline, "text/html; charset=utf-8");
+    return send(res, 200, inline, "text/html; charset=utf-8", {
+      "Set-Cookie": `${TOKEN_COOKIE}=${encodeURIComponent(ACCESS_TOKEN)}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax`,
+    });
   }
   const ext = path.extname(abs).toLowerCase();
   const types = {
