@@ -371,6 +371,12 @@ async function staticFile(req, res, url) {
     return send(res, 403, "Forbidden", "text/plain; charset=utf-8");
   }
   if (rel === "index.html") {
+    // index.html carries the API token to the browser, so serving it to an
+    // unauthenticated visitor hands out full read/write access to the vault.
+    // The other assets are app code and stay open, or script tags would 401.
+    if (!authorized(req, url)) {
+      return send(res, 401, "Unauthorized", "text/plain; charset=utf-8");
+    }
     const [html, css, js] = await Promise.all([
       fs.readFile(path.join(APP_DIR, "index.html"), "utf8"),
       fs.readFile(path.join(APP_DIR, "styles.css"), "utf8"),
