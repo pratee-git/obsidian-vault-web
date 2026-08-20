@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -13,7 +13,7 @@
       <div class="topbar">
         <button id="newNoteButton" class="icon-button" title="New note">+</button>
       </div>
-      <input id="searchInput" class="search" placeholder="Search by title or path" />
+      <input id="searchInput" class="search" placeholder="Search title, path, or text" />
       <div id="noteList" class="note-list">
         <div class="status">Loading notes...</div>
       </div>
@@ -26,9 +26,11 @@
             <span id="saveStatus" class="save-status saved" title="Saved" aria-label="Saved"></span>
             <div id="noteTitle" class="note-title">Choose a note</div>
           </div>
-          <div id="notePath" class="note-path">Markdown files from the vault</div>
+          <button id="notePath" class="note-path" title="Click to rename or move this note">Markdown files from the vault</button>
+          <input id="notePathInput" class="note-path-input hidden" spellcheck="false" autocomplete="off" aria-label="Note path" />
         </div>
         <div class="actions">
+          <button id="deleteNoteButton" class="icon-button tool" title="Move note to vault trash" aria-label="Move note to vault trash">🗑</button>
           <button id="themeToggleButton" class="icon-button tool" title="Toggle light/dark theme" aria-label="Toggle light/dark theme">☾</button>
           <button id="openObsidianButton" class="icon-button tool obsidian-button" title="Open current note in Obsidian" aria-label="Open current note in Obsidian">
             <img src="/assets/obsidian-logo.svg" alt="" />
@@ -57,6 +59,18 @@
       </aside>
     </main>
 
+    <dialog id="deleteNoteDialog">
+      <form method="dialog" id="deleteNoteForm">
+        <h2>Move to trash</h2>
+        <p id="deleteNoteTarget" class="dialog-note"></p>
+        <p class="dialog-hint">It goes to <code>.trash</code> in the vault, so you can still get it back.</p>
+        <div class="dialog-actions">
+          <button value="cancel">Cancel</button>
+          <button id="confirmDeleteButton" class="danger" value="default">Move to trash</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="newNoteDialog">
       <form method="dialog" id="newNoteForm">
         <h2>New note</h2>
@@ -66,10 +80,8 @@
         </label>
         <label>
           Folder
-          <select id="newNoteFolder">
-            <option value="Base">Base</option>
-            <option value="">Vault root</option>
-          </select>
+          <input id="newNoteFolder" list="folderOptions" placeholder="Vault root" autocomplete="off" />
+          <datalist id="folderOptions"></datalist>
         </label>
         <div class="dialog-actions">
           <button value="cancel">Cancel</button>

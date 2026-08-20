@@ -66,6 +66,7 @@ body {
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
   background: var(--bg);
@@ -233,6 +234,66 @@ body.sidebar-collapsed .sidebar-resize {
   font-size: 12px;
 }
 
+/* The path doubles as the rename/move control. */
+.note-path {
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border-radius: 4px;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: text;
+}
+
+.note-path:hover {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.note-path-input {
+  width: min(60vw, 460px);
+  min-width: 240px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 2px 4px;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+  outline: none;
+}
+
+.note-path.hidden,
+.note-path-input.hidden {
+  display: none;
+}
+
+.dialog-note {
+  margin: 0;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.dialog-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dialog-actions .danger {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.dialog-actions .danger:hover {
+  background: var(--warn);
+  color: var(--bg);
+}
+
 .icon-button {
   width: 34px;
   height: 34px;
@@ -289,6 +350,59 @@ body.sidebar-collapsed .sidebar-resize {
   overflow: auto;
   padding: 0 8px 12px;
   overscroll-behavior: contain;
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 6px 10px 6px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-row:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.folder-caret {
+  width: 10px;
+  flex: none;
+  color: var(--accent);
+  font-size: 0.7rem;
+}
+
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  opacity: 0.65;
+}
+
+.item-path.hidden {
+  display: none;
+}
+
+.item-snippet {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .note-item {
@@ -674,32 +788,66 @@ label select {
 }
 
 @media (max-width: 760px) {
-  body {
-    grid-template-columns: 1fr;
-    grid-template-rows: var(--sidebar-height, 42vh) minmax(0, 1fr);
-  }
-
-  body.sidebar-collapsed {
-    grid-template-rows: 36px 1fr;
-  }
-
+  body,
+  body.sidebar-collapsed,
   body.links-collapsed {
-    grid-template-rows: 0 1fr;
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
   }
 
+  /* The note list becomes an overlay drawer, driven by the existing toggle,
+     so the editor keeps the whole screen on a phone. */
   .sidebar {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(80vw, 320px);
+    z-index: 30;
+    border-right: 1px solid var(--line);
+    box-shadow: 0 0 40px rgb(0 0 0 / 0.4);
+  }
+
+  body.sidebar-collapsed .sidebar {
+    transform: translateX(calc(-100% + 32px));
+    box-shadow: none;
+  }
+
+  body.sidebar-collapsed .sidebar > *:not(.sidebar-toggle) {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .sidebar-toggle,
+  body.sidebar-collapsed .sidebar-toggle {
+    left: auto;
+    right: 5px;
+    top: 10px;
+  }
+
+  .workspace {
+    padding-left: 34px;
   }
 
   .editor-header {
     align-items: stretch;
     flex-direction: column;
+    gap: 8px;
   }
 
   .links-panel {
     grid-template-columns: 1fr;
-    max-height: 28vh;
+    max-height: 26vh;
+  }
+
+  /* iOS zooms the whole page when a focused field is under 16px. */
+  #editor {
+    font-size: 16px;
+  }
+
+  /* Drag-to-resize needs a pointer. */
+  .resize-handle {
+    display: none;
   }
 }
 

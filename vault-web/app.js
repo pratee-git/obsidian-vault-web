@@ -14,6 +14,11 @@ const els = {
   preview: document.querySelector("#preview"),
   title: document.querySelector("#noteTitle"),
   path: document.querySelector("#notePath"),
+  pathInput: document.querySelector("#notePathInput"),
+  deleteButton: document.querySelector("#deleteNoteButton"),
+  deleteDialog: document.querySelector("#deleteNoteDialog"),
+  deleteForm: document.querySelector("#deleteNoteForm"),
+  deleteTarget: document.querySelector("#deleteNoteTarget"),
   modeToggle: document.querySelector("#modeToggleButton"),
   themeToggle: document.querySelector("#themeToggleButton"),
   toggleSidebar: document.querySelector("#toggleSidebarButton"),
@@ -30,6 +35,7 @@ const els = {
   newNoteForm: document.querySelector("#newNoteForm"),
   newNoteTitle: document.querySelector("#newNoteTitle"),
   newNoteFolder: document.querySelector("#newNoteFolder"),
+  folderOptions: document.querySelector("#folderOptions"),
 };
 
 const suggest = {
@@ -160,17 +166,120 @@ function setSaveStatus(text, kind = "") {
   els.saveStatus.setAttribute("aria-label", text);
 }
 
+const collapsedFolders = readCollapsedFolders();
+
+function readCollapsedFolders() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem("vault-web-collapsed-folders") || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedFolders() {
+  localStorage.setItem("vault-web-collapsed-folders", JSON.stringify([...collapsedFolders]));
+}
+
+function buildTree(notes) {
+  const root = { name: "", path: "", folders: new Map(), notes: [], total: 0 };
+  for (const note of notes) {
+    const parts = note.path.split("/");
+    const fileName = parts.pop();
+    let node = root;
+    node.total += 1;
+    for (const part of parts) {
+      if (!node.folders.has(part)) {
+        node.folders.set(part, {
+          name: part,
+          path: node.path ? `${node.path}/${part}` : part,
+          folders: new Map(),
+          notes: [],
+          total: 0,
+        });
+      }
+      node = node.folders.get(part);
+      node.total += 1;
+    }
+    node.notes.push({ ...note, fileName });
+  }
+  return root;
+}
+
+function noteButton(note, depth, showPath) {
+  const button = document.createElement("button");
+  button.className = `note-item${note.path === state.currentPath ? " active" : ""}`;
+  button.style.paddingLeft = `${12 + depth * 14}px`;
+  button.innerHTML = `<div class="item-name"></div><div class="item-path"></div>`;
+  button.querySelector(".item-name").textContent = note.name;
+  // In the tree the folder is already on screen, so only search hits need a second line.
+  const secondary = note.snippet || (showPath ? note.path : "");
+  const line = button.querySelector(".item-path");
+  line.textContent = secondary;
+  line.classList.toggle("item-snippet", Boolean(note.snippet));
+  line.classList.toggle("hidden", !secondary);
+  button.addEventListener("click", () => openNote(note.path));
+  return button;
+}
+
+function renderTree(node, depth) {
+  const folders = [...node.folders.values()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const folder of folders) {
+    const collapsed = collapsedFolders.has(folder.path);
+    const row = document.createElement("button");
+    row.className = `folder-row${collapsed ? " collapsed" : ""}`;
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setAttribute("aria-expanded", String(!collapsed));
+    row.innerHTML = `<span class="folder-caret"></span><span class="folder-name"></span><span class="folder-count"></span>`;
+    row.querySelector(".folder-caret").textContent = collapsed ? "\u25b8" : "\u25be";
+    row.querySelector(".folder-name").textContent = folder.name;
+    row.querySelector(".folder-count").textContent = folder.total;
+    row.addEventListener("click", () => {
+      if (collapsedFolders.has(folder.path)) collapsedFolders.delete(folder.path);
+      else collapsedFolders.add(folder.path);
+      saveCollapsedFolders();
+      renderList();
+    });
+    els.list.append(row);
+    if (!collapsed) renderTree(folder, depth + 1);
+  }
+
+  const notes = [...node.notes].sort((a, b) => a.name.localeCompare(b.name));
+  for (const note of notes) els.list.append(noteButton(note, depth, false));
+}
+
 function renderList() {
-  const active = state.currentPath;
   els.list.innerHTML = "";
-  for (const note of state.notes) {
-    const button = document.createElement("button");
-    button.className = `note-item${note.path === active ? " active" : ""}`;
-    button.innerHTML = `<div class="item-name"></div><div class="item-path"></div>`;
-    button.querySelector(".item-name").textContent = note.name;
-    button.querySelector(".item-path").textContent = note.path;
-    button.addEventListener("click", () => openNote(note.path));
-    els.list.append(button);
+  if (!state.notes.length) {
+    els.list.innerHTML = '<div class="status">No matches</div>';
+    return;
+  }
+  // Search results stay flat — the folder each hit came from is in its path line.
+  if (els.search.value.trim()) {
+    for (const note of state.notes) els.list.append(noteButton(note, 0, true));
+    return;
+  }
+  renderTree(buildTree(state.notes), 0);
+}
+
+function revealFolder(notePath) {
+  const parts = notePath.split("/").slice(0, -1);
+  let prefix = "";
+  let changed = false;
+  for (const part of parts) {
+    prefix = prefix ? `${prefix}/${part}` : part;
+    if (collapsedFolders.delete(prefix)) changed = true;
+  }
+  if (changed) saveCollapsedFolders();
+}
+
+async function loadFolders() {
+  const folders = await request("/api/folders");
+  els.folderOptions.innerHTML = "";
+  for (const folder of folders) {
+    if (!folder) continue;
+    const option = document.createElement("option");
+    option.value = folder;
+    els.folderOptions.append(option);
   }
 }
 
@@ -190,6 +299,7 @@ async function openNote(path) {
   els.path.textContent = note.path;
   setSaveStatus("Saved", "saved");
   setMode(state.mode);
+  revealFolder(note.path);
   renderList();
   loadLinks();
 }
@@ -438,7 +548,8 @@ function setMode(mode) {
   const preview = mode === "preview";
   els.editor.classList.toggle("hidden", preview);
   els.preview.classList.toggle("hidden", !preview);
-  els.modeToggle.textContent = preview ? "🕮" : "✎";
+  // The icon shows where the button takes you, matching its tooltip.
+  els.modeToggle.textContent = preview ? "✎" : "👁";
   els.modeToggle.title = preview ? "Switch to Edit" : "Switch to Preview";
   els.modeToggle.setAttribute("aria-label", els.modeToggle.title);
   els.modeToggle.classList.toggle("active", preview);
@@ -519,6 +630,63 @@ function applyWikiSuggestion(index = suggest.active) {
   els.editor.focus();
 }
 
+function beginRename() {
+  if (!state.currentPath) return;
+  els.pathInput.value = state.currentPath;
+  els.path.classList.add("hidden");
+  els.pathInput.classList.remove("hidden");
+  els.pathInput.focus();
+  // Select the file name only — renaming is the common case, moving the rare one.
+  const start = state.currentPath.lastIndexOf("/") + 1;
+  els.pathInput.setSelectionRange(start, state.currentPath.length - 3);
+}
+
+function endRename() {
+  els.pathInput.classList.add("hidden");
+  els.path.classList.remove("hidden");
+}
+
+async function commitRename() {
+  const to = els.pathInput.value.trim().replace(/^\/+/, "");
+  endRename();
+  if (!to || to === state.currentPath) return;
+  if (!to.endsWith(".md")) {
+    setSaveStatus("Path must end in .md", "error");
+    return;
+  }
+  if (state.dirty) await saveNote();
+  const moved = await request("/api/note", {
+    method: "PATCH",
+    body: JSON.stringify({ path: state.currentPath, to }),
+  });
+  state.currentPath = moved.path;
+  els.title.textContent = basename(moved.path);
+  els.path.textContent = moved.path;
+  revealFolder(moved.path);
+  await loadNotes();
+  loadLinks();
+  const relinked = moved.relinked
+    ? `, ${moved.relinked} note${moved.relinked === 1 ? "" : "s"} relinked`
+    : "";
+  setSaveStatus(`Moved to ${moved.path}${relinked}`, "saved");
+}
+
+async function deleteCurrentNote() {
+  const target = state.currentPath;
+  if (!target) return;
+  window.clearTimeout(state.saveTimer);
+  state.dirty = false;
+  await request(`/api/note?path=${encodeURIComponent(target)}`, { method: "DELETE" });
+  state.currentPath = "";
+  els.editor.value = "";
+  els.title.textContent = "Choose a note";
+  els.path.textContent = "Markdown files from the vault";
+  els.outgoingLinks.innerHTML = "";
+  els.backlinks.innerHTML = "";
+  await loadNotes();
+  setSaveStatus(`Moved ${basename(target)} to trash`, "saved");
+}
+
 async function openCurrentInObsidian() {
   if (!state.currentPath) return;
   const result = await request(`/api/obsidian-url?path=${encodeURIComponent(state.currentPath)}`);
@@ -566,12 +734,40 @@ els.preview.addEventListener("click", (event) => {
   const link = event.target.closest(".wikilink");
   if (link) followWikiLink(link.dataset.target).catch(alert);
 });
+els.path.addEventListener("click", beginRename);
+els.pathInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    commitRename().catch((error) => setSaveStatus(error.message, "error"));
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    endRename();
+  }
+});
+els.pathInput.addEventListener("blur", endRename);
+els.deleteButton.addEventListener("click", () => {
+  if (!state.currentPath) return;
+  els.deleteTarget.textContent = state.currentPath;
+  els.deleteDialog.showModal();
+});
+els.deleteForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  els.deleteDialog.close();
+  if (event.submitter && event.submitter.value !== "default") return;
+  deleteCurrentNote().catch((error) => setSaveStatus(error.message, "error"));
+});
 els.newNoteButton.addEventListener("click", () => {
   els.newNoteTitle.value = "";
+  els.newNoteFolder.value = state.currentPath.split("/").slice(0, -1).join("/");
+  loadFolders().catch(() => {});
   els.dialog.showModal();
 });
 els.newNoteForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (event.submitter && event.submitter.value !== "default") {
+    els.dialog.close();
+    return;
+  }
   const created = await request("/api/note", {
     method: "POST",
     body: JSON.stringify({
@@ -580,6 +776,7 @@ els.newNoteForm.addEventListener("submit", async (event) => {
     }),
   });
   els.dialog.close();
+  revealFolder(created.path);
   await loadNotes();
   await openNote(created.path);
 });

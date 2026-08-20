@@ -5,10 +5,12 @@ const path = require("path");
 
 const VAULT_ROOT = process.env.VAULT_ROOT || process.cwd();
 const PORT = Number(process.env.PORT || 4177);
-const HOST = "127.0.0.1";
+const HOST = process.env.HOST || "127.0.0.1";
 const APP_DIR = __dirname;
 const ACCESS_TOKEN = process.env.VAULT_WEB_TOKEN || crypto.randomBytes(32).toString("hex");
-const BASE_ORIGIN = `http://${HOST}:${PORT}`;
+// Set BASE_ORIGIN to the public URL when serving through a tunnel, otherwise
+// the browser Origin never matches and every write is rejected.
+const BASE_ORIGIN = process.env.BASE_ORIGIN || `http://${HOST}:${PORT}`;
 const HIDDEN_DIRS = new Set([
   ".git",
   ".obsidian",
@@ -84,6 +86,40 @@ function vaultPath(relPath = "") {
   return absolute;
 }
 
+// Renaming a note orphans every [[wikilink]] pointing at the old title, so
+// rewrite them the way Obsidian does. Aliases and #sections are preserved.
+function rewriteWikiLinks(content, from, to) {
+  return content.replace(/\[\[([^\]]+)\]\]/g, (match, inner) => {
+    const [targetPart, ...alias] = inner.split("|");
+    const [target, ...section] = targetPart.split("#");
+    if (target.trim().replace(/\.md$/i, "").toLowerCase() !== from.toLowerCase()) return match;
+    return `[[${to}${section.length ? `#${section.join("#")}` : ""}${alias.length ? `|${alias.join("|")}` : ""}]]`;
+  });
+}
+
+async function relinkTitle(from, to) {
+  const files = await walk(VAULT_ROOT);
+  let changed = 0;
+  for (const file of files) {
+    const abs = vaultPath(file.path);
+    const content = await fs.readFile(abs, "utf8");
+    const next = rewriteWikiLinks(content, from, to);
+    if (next === content) continue;
+    await fs.writeFile(abs, next, "utf8");
+    changed += 1;
+  }
+  return changed;
+}
+
+async function exists(absPath) {
+  try {
+    await fs.access(absPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function toVaultRelative(absPath) {
   return path.relative(VAULT_ROOT, absPath).replace(/\\/g, "/");
 }
@@ -112,6 +148,12 @@ function extractWikiLinks(content) {
     links.push(target);
   }
   return links;
+}
+
+function snippetAround(content, at, length) {
+  const start = Math.max(0, at - 40);
+  const text = content.slice(start, at + length + 60).replace(/\s+/g, " ").trim();
+  return `${start > 0 ? "…" : ""}${text}…`;
 }
 
 async function walk(dir, out = []) {
@@ -179,11 +221,39 @@ async function api(req, res, url) {
   if (url.pathname === "/api/notes" && req.method === "GET") {
     const q = (url.searchParams.get("q") || "").trim().toLowerCase();
     const files = await walk(VAULT_ROOT);
-    const filtered = q
-      ? files.filter((file) => file.path.toLowerCase().includes(q))
-      : files;
-    filtered.sort((a, b) => b.modified - a.modified);
-    return send(res, 200, filtered.slice(0, 500));
+    if (!q) {
+      files.sort((a, b) => b.modified - a.modified);
+      return send(res, 200, files.slice(0, 500));
+    }
+
+    // ponytail: reads every note on each search. Fine at a few thousand notes;
+    // add an mtime-keyed content cache if the vault outgrows that.
+    const matches = [];
+    for (const file of files) {
+      if (file.path.toLowerCase().includes(q)) {
+        matches.push(file);
+        continue;
+      }
+      const content = await fs.readFile(vaultPath(file.path), "utf8");
+      const at = content.toLowerCase().indexOf(q);
+      if (at < 0) continue;
+      matches.push({ ...file, snippet: snippetAround(content, at, q.length) });
+    }
+    matches.sort((a, b) => b.modified - a.modified);
+    return send(res, 200, matches.slice(0, 500));
+  }
+
+  if (url.pathname === "/api/folders" && req.method === "GET") {
+    const files = await walk(VAULT_ROOT);
+    const folders = new Set([""]);
+    for (const file of files) {
+      const parts = file.path.split("/");
+      parts.pop();
+      for (let i = 1; i <= parts.length; i += 1) {
+        folders.add(parts.slice(0, i).join("/"));
+      }
+    }
+    return send(res, 200, [...folders].sort());
   }
 
   if (url.pathname === "/api/status" && req.method === "GET") {
@@ -231,6 +301,39 @@ async function api(req, res, url) {
     ].join("\n");
     await fs.writeFile(abs, template, { encoding: "utf8", flag: "wx" });
     return send(res, 201, { path: rel, content: template });
+  }
+
+  // Rename and move are the same operation: give the note a new path.
+  if (url.pathname === "/api/note" && req.method === "PATCH") {
+    const body = await parseBody(req);
+    if (!body.path || !body.path.endsWith(".md") || !body.to || !body.to.endsWith(".md")) {
+      return send(res, 400, { error: "Bad path" });
+    }
+    const from = vaultPath(body.path);
+    const to = vaultPath(body.to);
+    if (from === to) return send(res, 200, { path: body.to });
+    if (await exists(to)) {
+      return send(res, 409, { error: "A note already exists at that path" });
+    }
+    await fs.mkdir(path.dirname(to), { recursive: true });
+    await fs.rename(from, to);
+    const oldTitle = noteTitleFromPath(body.path);
+    const newTitle = noteTitleFromPath(body.to);
+    const relinked = oldTitle === newTitle ? 0 : await relinkTitle(oldTitle, newTitle);
+    return send(res, 200, { path: toVaultRelative(to), relinked });
+  }
+
+  // Deletes go to the vault-local .trash Obsidian already uses, so they stay recoverable.
+  if (url.pathname === "/api/note" && req.method === "DELETE") {
+    const rel = url.searchParams.get("path");
+    if (!rel || !rel.endsWith(".md")) return send(res, 400, { error: "Bad path" });
+    const from = vaultPath(rel);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const trashRel = `.trash/${rel.replace(/\//g, " - ").replace(/\.md$/i, "")} ${stamp}.md`;
+    const to = vaultPath(trashRel);
+    await fs.mkdir(path.dirname(to), { recursive: true });
+    await fs.rename(from, to);
+    return send(res, 200, { trashed: trashRel });
   }
 
   if (url.pathname === "/api/resolve" && req.method === "GET") {
@@ -291,7 +394,7 @@ async function staticFile(req, res, url) {
   }
 }
 
-http
+const server = http
   .createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${HOST}:${PORT}`);
@@ -312,8 +415,13 @@ http
     } catch (error) {
       send(res, 500, { error: error.message });
     }
-  })
-  .listen(PORT, HOST, () => {
+  });
+
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
     console.log(`Vault Web: http://${HOST}:${PORT}`);
     console.log(`Vault root: ${VAULT_ROOT}`);
   });
+}
+
+module.exports = { rewriteWikiLinks, vaultPath, server };
