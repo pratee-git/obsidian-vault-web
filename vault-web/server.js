@@ -171,22 +171,36 @@ function vaultPath(relPath = "") {
 
 // Renaming a note orphans every [[wikilink]] pointing at the old title, so
 // rewrite them the way Obsidian does. Aliases and #sections are preserved.
-function rewriteWikiLinks(content, from, to) {
+// Rewrites links to a note that has moved or been renamed. Each link keeps the
+// style it was written in: a path-style link gets the new path, a title-style
+// link gets the new title. Aliases and #sections are preserved.
+function rewriteWikiLinks(content, fromPath, toPath) {
+  const fromKey = fromPath.replace(/\.md$/i, "").toLowerCase();
+  const fromTitle = noteTitleFromPath(fromPath).toLowerCase();
+  const toKey = toPath.replace(/\.md$/i, "");
+  const toTitle = noteTitleFromPath(toPath);
+
   return content.replace(/\[\[([^\]]+)\]\]/g, (match, inner) => {
     const [targetPart, ...alias] = inner.split("|");
-    const [target, ...section] = targetPart.split("#");
-    if (target.trim().replace(/\.md$/i, "").toLowerCase() !== from.toLowerCase()) return match;
-    return `[[${to}${section.length ? `#${section.join("#")}` : ""}${alias.length ? `|${alias.join("|")}` : ""}]]`;
+    const [rawTarget, ...section] = targetPart.split("#");
+    const target = rawTarget.trim().replace(/^\/+/, "").replace(/\.md$/i, "").toLowerCase();
+
+    let replacement;
+    if (target === fromKey) replacement = toKey;
+    else if (target === fromTitle) replacement = toTitle;
+    else return match;
+
+    return `[[${replacement}${section.length ? `#${section.join("#")}` : ""}${alias.length ? `|${alias.join("|")}` : ""}]]`;
   });
 }
 
-async function relinkTitle(from, to) {
+async function relinkNote(fromPath, toPath) {
   const files = await walk(VAULT_ROOT);
   let changed = 0;
   for (const file of files) {
     const abs = vaultPath(file.path);
     const content = await fs.readFile(abs, "utf8");
-    const next = rewriteWikiLinks(content, from, to);
+    const next = rewriteWikiLinks(content, fromPath, toPath);
     if (next === content) continue;
     await fs.writeFile(abs, next, "utf8");
     changed += 1;
@@ -216,7 +230,28 @@ function normalizeWikiTarget(target) {
     .split("|")[0]
     .split("#")[0]
     .trim()
+    .replace(/^\/+/, "")
     .replace(/\.md$/i, "");
+}
+
+// A wikilink may name a note by title ([[XOLO-CONTEXT]]) or by vault path
+// ([[10_Projects/Project Xolo/XOLO-CONTEXT]]). Obsidian resolves both; matching
+// on title alone reported every path-style link in the vault as broken.
+function linkIndex(files) {
+  const byPath = new Map();
+  const byTitle = new Map();
+  for (const file of files) {
+    byPath.set(file.path.replace(/\.md$/i, "").toLowerCase(), file);
+    // A duplicated title is ambiguous; keep the first, as Obsidian does.
+    const title = file.name.toLowerCase();
+    if (!byTitle.has(title)) byTitle.set(title, file);
+  }
+  return {
+    resolve(target) {
+      const key = normalizeWikiTarget(target).toLowerCase();
+      return byPath.get(key) || byTitle.get(key) || null;
+    },
+  };
 }
 
 function extractWikiLinks(content) {
@@ -260,19 +295,17 @@ async function walk(dir, out = []) {
   return out;
 }
 
-async function findMarkdownByTitle(title) {
-  const wanted = title.replace(/\.md$/i, "").toLowerCase();
+async function findNote(target) {
   const files = await walk(VAULT_ROOT);
-  return files.find((file) => file.name.toLowerCase() === wanted);
+  return linkIndex(files).resolve(target);
 }
 
 async function linkGraphFor(relPath) {
   const files = await walk(VAULT_ROOT);
-  const byTitle = new Map(files.map((file) => [file.name.toLowerCase(), file]));
-  const currentTitle = noteTitleFromPath(relPath).toLowerCase();
+  const index = linkIndex(files);
   const currentContent = await fs.readFile(vaultPath(relPath), "utf8");
   const outgoing = extractWikiLinks(currentContent).map((target) => {
-    const note = byTitle.get(target.toLowerCase());
+    const note = index.resolve(target);
     return note || { name: target, path: "", missing: true };
   });
 
@@ -280,8 +313,11 @@ async function linkGraphFor(relPath) {
   for (const file of files) {
     if (file.path === relPath) continue;
     const content = await fs.readFile(vaultPath(file.path), "utf8");
-    const links = extractWikiLinks(content).map((link) => link.toLowerCase());
-    if (links.includes(currentTitle)) backlinks.push(file);
+    const hit = extractWikiLinks(content).some((link) => {
+      const note = index.resolve(link);
+      return note && note.path === relPath;
+    });
+    if (hit) backlinks.push(file);
   }
   backlinks.sort((a, b) => b.modified - a.modified);
   return { outgoing, backlinks };
@@ -400,9 +436,7 @@ async function api(req, res, url) {
     }
     await fs.mkdir(path.dirname(to), { recursive: true });
     await fs.rename(from, to);
-    const oldTitle = noteTitleFromPath(body.path);
-    const newTitle = noteTitleFromPath(body.to);
-    const relinked = oldTitle === newTitle ? 0 : await relinkTitle(oldTitle, newTitle);
+    const relinked = await relinkNote(body.path, toVaultRelative(to));
     return send(res, 200, { path: toVaultRelative(to), relinked });
   }
 
@@ -422,7 +456,7 @@ async function api(req, res, url) {
   if (url.pathname === "/api/resolve" && req.method === "GET") {
     const title = url.searchParams.get("title") || "";
     const sectionless = title.split("#")[0].split("|")[0].trim();
-    const file = await findMarkdownByTitle(sectionless);
+    const file = await findNote(sectionless);
     return file ? send(res, 200, file) : send(res, 404, { error: "Not found" });
   }
 
@@ -515,4 +549,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { rewriteWikiLinks, vaultPath, verifyAccessJwt, server };
+module.exports = { rewriteWikiLinks, linkIndex, vaultPath, verifyAccessJwt, server };

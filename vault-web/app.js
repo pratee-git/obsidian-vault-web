@@ -563,7 +563,12 @@ function setMode(mode) {
 
 async function followWikiLink(target) {
   const clean = target.split("|")[0].split("#")[0].trim();
-  const found = state.notes.find((note) => note.name.toLowerCase() === clean.toLowerCase());
+  // Links name a note either by title or by vault path — try path first, since
+  // a path is unambiguous and a title may repeat across folders.
+  const key = clean.replace(/^\/+/, "").replace(/\.md$/i, "").toLowerCase();
+  const found =
+    state.notes.find((note) => note.path.replace(/\.md$/i, "").toLowerCase() === key) ||
+    state.notes.find((note) => note.name.toLowerCase() === key);
   if (found) return openNote(found.path);
   const note = await request(`/api/resolve?title=${encodeURIComponent(clean)}`);
   await openNote(note.path);

@@ -7,18 +7,57 @@ const AUD = "aud-tag-under-test";
 process.env.ACCESS_TEAM_DOMAIN = TEAM;
 process.env.ACCESS_AUD = AUD;
 
-const { rewriteWikiLinks, vaultPath, verifyAccessJwt } = require("./server");
+const { rewriteWikiLinks, linkIndex, vaultPath, verifyAccessJwt } = require("./server");
 
-const rewrite = (text) => rewriteWikiLinks(text, "Vault Web-CONTEXT", "Notes Web");
+const FROM = "10_Projects/Old/Vault Web-CONTEXT.md";
+const TO = "30_Resources/New/Notes Web.md";
+const rewrite = (text) => rewriteWikiLinks(text, FROM, TO);
 
+// title-style links keep their style, path-style links keep theirs
 assert.strictEqual(rewrite("see [[Vault Web-CONTEXT]]"), "see [[Notes Web]]");
+assert.strictEqual(
+  rewrite("see [[10_Projects/Old/Vault Web-CONTEXT]]"),
+  "see [[30_Resources/New/Notes Web]]",
+  "a path-style link gets the new path, not the bare title");
 assert.strictEqual(rewrite("[[Vault Web-CONTEXT|the plan]]"), "[[Notes Web|the plan]]");
 assert.strictEqual(rewrite("[[Vault Web-CONTEXT#Ports]]"), "[[Notes Web#Ports]]");
 assert.strictEqual(rewrite("[[Vault Web-CONTEXT#Ports|ports]]"), "[[Notes Web#Ports|ports]]");
+assert.strictEqual(
+  rewrite("[[10_Projects/Old/Vault Web-CONTEXT#Ports|ports]]"),
+  "[[30_Resources/New/Notes Web#Ports|ports]]");
 assert.strictEqual(rewrite("[[vault web-context]]"), "[[Notes Web]]", "match is case-insensitive");
 assert.strictEqual(rewrite("[[Vault Web-CONTEXT.md]]"), "[[Notes Web]]");
+assert.strictEqual(rewrite("[[/10_Projects/Old/Vault Web-CONTEXT]]"), "[[30_Resources/New/Notes Web]]",
+  "a leading slash still resolves");
 assert.strictEqual(rewrite("[[Xolo-CONTEXT]]"), "[[Xolo-CONTEXT]]", "other links untouched");
+assert.strictEqual(rewrite("[[10_Projects/Other/Vault Web-CONTEXT]]"), "[[10_Projects/Other/Vault Web-CONTEXT]]",
+  "a same-titled note in another folder is not touched by a path-style link");
 assert.strictEqual(rewrite("Vault Web-CONTEXT"), "Vault Web-CONTEXT", "bare text untouched");
+
+// A pure move must still relink, or every path-style link to it dies.
+assert.strictEqual(
+  rewriteWikiLinks("[[10_Projects/Old/Note]]", "10_Projects/Old/Note.md", "20_Areas/Work/Note.md"),
+  "[[20_Areas/Work/Note]]",
+  "moving without renaming still rewrites path-style links");
+
+// --- link resolution ---
+
+const files = [
+  { path: "10_Projects/Project Xolo/XOLO-CONTEXT.md", name: "XOLO-CONTEXT" },
+  { path: "10_Projects/Project Lifestream/LIFESTREAM-CONTEXT.md", name: "LIFESTREAM-CONTEXT" },
+  { path: "Base/XOLO-CONTEXT.md", name: "XOLO-CONTEXT" },
+];
+const index = linkIndex(files);
+
+assert.strictEqual(index.resolve("10_Projects/Project Xolo/XOLO-CONTEXT").path, files[0].path,
+  "a full-path link resolves — this is what the vault actually uses");
+assert.strictEqual(index.resolve("Base/XOLO-CONTEXT").path, files[2].path,
+  "the path picks the right one of two same-titled notes");
+assert.strictEqual(index.resolve("LIFESTREAM-CONTEXT").path, files[1].path, "a bare title still resolves");
+assert.strictEqual(index.resolve("10_Projects/Project Xolo/XOLO-CONTEXT.md#Ports|xolo").path, files[0].path,
+  "section and alias are stripped before matching");
+assert.strictEqual(index.resolve("XOLO-CONTEXT").path, files[0].path, "an ambiguous title takes the first match");
+assert.strictEqual(index.resolve("10_Projects/Nope/Missing"), null);
 
 // Traversal is neutralised by stripping the leading ../, so it lands inside the
 // vault rather than throwing; an absolute path is what trips the guard.
