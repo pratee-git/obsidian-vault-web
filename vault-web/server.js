@@ -18,6 +18,9 @@ const HIDDEN_DIRS = new Set([
   ".obsidian",
   "node_modules",
   ".trash",
+  // Claude Code worktrees: full copies of the vault frozen at branch time. Walked,
+  // they put 1,486 stale notes in the list and let a wikilink resolve to an old copy.
+  ".claude",
   ".tmp.drivedownload",
   ".tmp.driveupload",
 ]);
@@ -166,6 +169,12 @@ function vaultPath(relPath = "") {
   if (absolute !== root && !absolute.startsWith(root + path.sep)) {
     throw new Error("Path escapes vault root");
   }
+  // HIDDEN_DIRS only prunes the walk; every /api/note route names its own path,
+  // so the private zone has to be refused here or it stays fetchable directly.
+  const top = path.relative(root, absolute).split(path.sep)[0];
+  if (HIDDEN_DIRS.has(top)) {
+    throw new Error("Path is not served");
+  }
   return absolute;
 }
 
@@ -295,6 +304,10 @@ async function walk(dir, out = []) {
   return out;
 }
 
+function contentVersion(content) {
+  return crypto.createHash("sha256").update(content, "utf8").digest("hex").slice(0, 16);
+}
+
 async function findNote(target) {
   const files = await walk(VAULT_ROOT);
   return linkIndex(files).resolve(target);
@@ -387,7 +400,7 @@ async function api(req, res, url) {
     const rel = url.searchParams.get("path");
     if (!rel || !rel.endsWith(".md")) return send(res, 400, { error: "Bad path" });
     const content = await fs.readFile(vaultPath(rel), "utf8");
-    return send(res, 200, { path: rel, content });
+    return send(res, 200, { path: rel, content, version: contentVersion(content) });
   }
 
   if (url.pathname === "/api/note" && req.method === "PUT") {
@@ -395,8 +408,18 @@ async function api(req, res, url) {
     if (!body.path || !body.path.endsWith(".md")) {
       return send(res, 400, { error: "Bad path" });
     }
-    await fs.writeFile(vaultPath(body.path), String(body.content || ""), "utf8");
-    return send(res, 200, { ok: true });
+    // Refuse to overwrite a file that changed since this client loaded it (another
+    // tab, an agent, git). Keyed on content, not mtime — Synology Drive touches mtime
+    // without changing bytes. baseVersion is required: a client that does not send
+    // it is a stale tab, which is exactly the writer this check exists to stop.
+    const abs = vaultPath(body.path);
+    const onDisk = await fs.readFile(abs, "utf8").catch(() => null);
+    if (onDisk !== null && body.baseVersion !== contentVersion(onDisk)) {
+      return send(res, 409, { error: "Note changed on disk since it was opened", version: contentVersion(onDisk) });
+    }
+    const content = String(body.content || "");
+    await fs.writeFile(abs, content, "utf8");
+    return send(res, 200, { ok: true, version: contentVersion(content) });
   }
 
   if (url.pathname === "/api/note" && req.method === "POST") {

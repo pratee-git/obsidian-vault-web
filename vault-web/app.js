@@ -150,7 +150,9 @@ async function request(url, options) {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || response.statusText);
+    const error = new Error(text || response.statusText);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -290,9 +292,23 @@ async function loadNotes() {
 }
 
 async function openNote(path) {
-  if (state.dirty) await saveNote();
+  if (state.dirty) {
+    try {
+      await saveNote();
+    } catch (error) {
+      if (error.status !== 409) throw error;
+      // Leaving would drop the edits; staying keeps them on screen to copy out.
+      const discard = window.confirm(
+        "This note changed on disk since you opened it, so your edits were not saved.\n\n" +
+        "OK = discard your edits and continue\nCancel = stay here (copy your edits, then reload the note)",
+      );
+      if (!discard) return;
+      state.dirty = false;
+    }
+  }
   const note = await request(`/api/note?path=${encodeURIComponent(path)}`);
   state.currentPath = note.path;
+  state.version = note.version;
   state.dirty = false;
   els.editor.value = note.content;
   els.title.textContent = basename(note.path);
@@ -308,20 +324,28 @@ async function saveNote() {
   if (!state.currentPath) return;
   setSaveStatus("Saving...", "saving");
   try {
-    await request("/api/note", {
+    const saved = await request("/api/note", {
       method: "PUT",
       body: JSON.stringify({
         path: state.currentPath,
         content: els.editor.value,
+        baseVersion: state.version,
       }),
     });
+    state.version = saved.version;
     state.dirty = false;
     els.path.textContent = state.currentPath;
     setSaveStatus(`Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, "saved");
     window.clearTimeout(state.saveTimer);
     loadLinks();
   } catch (error) {
-    setSaveStatus(`Save failed: ${error.message}`, "error");
+    if (error.status === 409) {
+      // Stop autosave retrying on every keystroke; edits stay in the editor.
+      window.clearTimeout(state.saveTimer);
+      setSaveStatus("Not saved — note changed on disk. Copy your edits, then reopen the note.", "error");
+    } else {
+      setSaveStatus(`Save failed: ${error.message}`, "error");
+    }
     throw error;
   }
 }
@@ -331,7 +355,7 @@ function scheduleSave() {
   setSaveStatus("Unsaved changes", "error");
   updateWikiSuggest();
   window.clearTimeout(state.saveTimer);
-  state.saveTimer = window.setTimeout(saveNote, 900);
+  state.saveTimer = window.setTimeout(() => saveNote().catch(() => {}), 900);
 }
 
 function renderLinkList(container, items, emptyText) {
@@ -665,6 +689,8 @@ async function commitRename() {
     body: JSON.stringify({ path: state.currentPath, to }),
   });
   state.currentPath = moved.path;
+  // Relinking may rewrite links inside this note too — take the disk version.
+  state.version = (await request(`/api/note?path=${encodeURIComponent(moved.path)}`)).version;
   els.title.textContent = basename(moved.path);
   els.path.textContent = moved.path;
   revealFolder(moved.path);
@@ -789,7 +815,7 @@ els.newNoteForm.addEventListener("submit", async (event) => {
 window.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
     event.preventDefault();
-    saveNote();
+    saveNote().catch(() => {});
   }
 });
 
@@ -804,6 +830,44 @@ loadNotes().catch((error) => {
   els.list.textContent = error.message;
   setSaveStatus(error.message, "error");
 });
+
+// The list and the open note used to load once per page, so anything written to
+// disk by agents, git or another tab stayed invisible until a reload. Re-read on
+// return to the tab and every minute while visible. The open note is replaced only
+// when it has no unsaved edits and the disk copy actually differs.
+const REFRESH_MS = 60_000;
+let refreshing = false;
+async function refreshFromDisk() {
+  if (document.hidden || refreshing) return;
+  refreshing = true;
+  try {
+    const listScroll = els.list.scrollTop;
+    await loadNotes();
+    els.list.scrollTop = listScroll;
+    if (state.currentPath && !state.dirty) {
+      const path = state.currentPath;
+      const note = await request(`/api/note?path=${encodeURIComponent(path)}`);
+      if (path === state.currentPath && !state.dirty) state.version = note.version;
+      if (path === state.currentPath && !state.dirty && note.content !== els.editor.value) {
+        const editorScroll = els.editor.scrollTop;
+        const previewScroll = els.preview.scrollTop;
+        els.editor.value = note.content;
+        setMode(state.mode);
+        els.editor.scrollTop = editorScroll;
+        els.preview.scrollTop = previewScroll;
+        loadLinks();
+        setSaveStatus("Reloaded from disk", "saved");
+      }
+    }
+  } catch {
+    // A missed refresh is harmless; the next tick or tab focus retries.
+  } finally {
+    refreshing = false;
+  }
+}
+document.addEventListener("visibilitychange", refreshFromDisk);
+window.addEventListener("focus", refreshFromDisk);
+window.setInterval(refreshFromDisk, REFRESH_MS);
 
 restorePanelSizes();
 bindResizeHandles();

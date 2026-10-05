@@ -104,7 +104,13 @@ const check = async () => {
   assert.strictEqual(await verifyAccessJwt("", keys), false);
   assert.strictEqual(await verifyAccessJwt("not.a.jwt", keys), false);
 
-  console.log("server: all assertions passed");
+  // vault-web is Pratee's own reader behind Cloudflare Access, not an agent:
+// 50_Private stays fully visible here. Only the internal dirs are refused.
+assert.ok(vaultPath("50_Private/Health/labs.md"));
+assert.throws(() => vaultPath(".git/config"), /not served/);
+assert.ok(vaultPath("10_Projects/x.md"));
+
+console.log("server: all assertions passed");
 };
 
 check();
